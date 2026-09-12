@@ -1,0 +1,192 @@
+# ============================================================
+# ErpPOS - Apache Configuration for URL Rewriting
+# Handles clean URLs and routing to index.php
+# ============================================================
+
+# Enable mod_rewrite
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # ============================================================
+    # SECURITY RULES
+    # ============================================================
+    
+    # Prevent access to hidden files and directories
+    RewriteRule "^\." - [F]
+    
+    # Prevent access to sensitive directories
+    RewriteRule "^(config|src|logs|vendor|\.git)" - [F]
+    
+    # Block access to environment files
+    RewriteRule "^\.env" - [F]
+    RewriteRule "^database\.sql$" - [F]
+    
+    # ============================================================
+    # BASE PATH CONFIGURATION
+    # ============================================================
+    # Adjust RewriteBase if application is in a subdirectory
+    # For root domain: RewriteBase /
+    # For subdomain: RewriteBase /
+    # For subdirectory: RewriteBase /erp/
+    
+    RewriteBase /
+    
+    # ============================================================
+    # URL REWRITING RULES
+    # ============================================================
+    
+    # Skip rewriting for actual files (images, css, js, etc.)
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+    
+    # Rewrite all requests to index.php
+    RewriteRule ^(.*)$ index.php [QSA,L]
+    
+</IfModule>
+
+# ============================================================
+# PHP CONFIGURATION
+# ============================================================
+
+<IfModule mod_php.c>
+    # Set PHP version if needed (for hosting with multiple versions)
+    # AddHandler application/x-httpd-php81 .php
+    
+    # Set memory limit for file uploads
+    php_value upload_max_filesize 100M
+    php_value post_max_size 100M
+    php_value memory_limit 256M
+    php_value max_execution_time 300
+    php_value default_charset "UTF-8"
+</IfModule>
+
+# ============================================================
+# COMPRESSION & PERFORMANCE
+# ============================================================
+
+<IfModule mod_deflate.c>
+    # Compress HTML, CSS, JavaScript
+    AddOutputFilterByType DEFLATE text/html text/plain
+    AddOutputFilterByType DEFLATE text/xml
+    AddOutputFilterByType DEFLATE text/css
+    AddOutputFilterByType DEFLATE application/javascript
+    AddOutputFilterByType DEFLATE application/json
+    AddOutputFilterByType DEFLATE application/xml
+    
+    # Don't compress already compressed files
+    SetEnvIfNoCase Request_URI \.(?:gif|jpe?g|png|zip|gz|txt|pdf)$ no-gzip dont-vary
+</IfModule>
+
+# ============================================================
+# CACHING HEADERS
+# ============================================================
+
+<IfModule mod_expires.c>
+    ExpiresActive On
+    
+    # Cache static assets for 1 year
+    ExpiresByType image/jpeg "access plus 1 year"
+    ExpiresByType image/gif "access plus 1 year"
+    ExpiresByType image/png "access plus 1 year"
+    ExpiresByType text/css "access plus 1 year"
+    ExpiresByType application/javascript "access plus 1 year"
+    ExpiresByType font/woff2 "access plus 1 year"
+    
+    # Don't cache HTML files (they change frequently)
+    ExpiresByType text/html "access plus 0 seconds"
+    
+    # Don't cache API responses
+    <FilesMatch "\.(php|json)$">
+        ExpiresActive Off
+    </FilesMatch>
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Set cache control for static assets
+    <FilesMatch "\.(jpg|jpeg|png|gif|ico|css|js|woff|woff2|ttf|svg)$">
+        Header set Cache-Control "max-age=31536000, public"
+    </FilesMatch>
+    
+    # No cache for HTML files
+    <FilesMatch "\.(html|htm|php)$">
+        Header set Cache-Control "max-age=0, public, must-revalidate"
+    </FilesMatch>
+    
+    # API responses should not be cached
+    <FilesMatch "^/api/">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires "0"
+    </FilesMatch>
+</IfModule>
+
+# ============================================================
+# SECURITY HEADERS
+# ============================================================
+
+<IfModule mod_headers.c>
+    # Prevent MIME type sniffing
+    Header set X-Content-Type-Options "nosniff"
+    
+    # Enable XSS Protection
+    Header set X-XSS-Protection "1; mode=block"
+    
+    # Clickjacking protection
+    Header set X-Frame-Options "SAMEORIGIN"
+    
+    # Referrer Policy
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    
+    # Feature Policy (Permissions Policy)
+    Header set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+    
+    # HTTPS enforcement (uncomment for HTTPS-only)
+    # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+</IfModule>
+
+# ============================================================
+# MIME TYPES
+# ============================================================
+
+<IfModule mod_mime.c>
+    AddType application/json .json
+    AddType application/javascript .js
+    AddType text/css .css
+    AddType text/x-component .htc
+    AddType image/svg+xml .svg
+    AddEncoding gzip .gz
+</IfModule>
+
+# ============================================================
+# DIRECTORY ACCESS
+# ============================================================
+
+# Deny directory listing
+<IfModule mod_autoindex.c>
+    Options -Indexes
+</IfModule>
+
+# Prevent access to directory index
+<FilesMatch "^index">
+    <IfModule mod_rewrite.c>
+        RewriteCond %{REQUEST_FILENAME} index\.php$ [NC]
+        RewriteRule .* - [L]
+    </IfModule>
+</FilesMatch>
+
+# ============================================================
+# ERROR HANDLING
+# ============================================================
+
+# Custom error documents (optional)
+# Uncomment and adjust paths if you have custom error pages
+# ErrorDocument 400 /errors/400.php
+# ErrorDocument 401 /errors/401.php
+# ErrorDocument 403 /errors/403.php
+# ErrorDocument 404 /errors/404.php
+# ErrorDocument 500 /errors/500.php
+
+# ============================================================
+# END OF CONFIGURATION
+# ============================================================
