@@ -1,360 +1,240 @@
 <?php
-/**
- * ErpPOS - Main Application Entry Point
- * Handles routing, authentication, and view rendering
- * 
- * @version 1.0.0
- * @author Sktuptech
- */
 
-// ============================================================
-// ERROR HANDLING & REPORTING
-// ============================================================
-error_reporting(E_ALL);
-ini_set('display_errors', 0); // Disable in production
-ini_set('log_errors', 1);
-ini_set('error_log', __DIR__ . '/logs/error.log');
+declare(strict_types=1);
 
-// ============================================================
-// SECURITY HEADERS
-// ============================================================
-header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: SAMEORIGIN');
-header('X-XSS-Protection: 1; mode=block');
-header('Content-Type: application/json; charset=utf-8');
+use Karoor\Core\AuditLogger;
+use Karoor\Core\Auth;
+use Karoor\Core\Database;
+use Karoor\Core\Helpers;
+use Karoor\Core\Response;
 
-// ============================================================
-// CONFIGURATION & PATH SETUP
-// ============================================================
-define('BASE_PATH', __DIR__);
-define('APP_PATH', BASE_PATH . DIRECTORY_SEPARATOR . 'app');
-define('CONFIG_PATH', BASE_PATH . DIRECTORY_SEPARATOR . 'config');
-define('SRC_PATH', BASE_PATH . DIRECTORY_SEPARATOR . 'src');
-define('VIEWS_PATH', BASE_PATH . DIRECTORY_SEPARATOR . 'views');
-define('API_PATH', BASE_PATH . DIRECTORY_SEPARATOR . 'api' . DIRECTORY_SEPARATOR . 'v1');
-
-// Load configuration
-if (!file_exists(CONFIG_PATH . '/app.php')) {
-    die(json_encode([
-        'status' => 'error',
-        'message' => 'Configuration file not found',
-        'code' => 500
-    ]));
-}
-require_once CONFIG_PATH . '/app.php';
-
-// ============================================================
-// AUTOLOADER & CORE CLASSES
-// ============================================================
-spl_autoload_register(function($class) {
-    $file = SRC_PATH . DIRECTORY_SEPARATOR . $class . '.php';
-    if (file_exists($file)) {
-        require_once $file;
-    }
-});
-
-// Load core classes
-require_once SRC_PATH . '/Database.php';
-require_once SRC_PATH . '/Auth.php';
-require_once SRC_PATH . '/Validator.php';
-require_once SRC_PATH . '/Response.php';
-require_once SRC_PATH . '/Helpers.php';
-
-// ============================================================
-// SESSION & AUTHENTICATION
-// ============================================================
-session_start();
-
-// ============================================================
-// REQUEST PARSING - IMPROVED ROUTE MATCHING
-// ============================================================
-
-/**
- * Parse clean URI from various sources
- * Handles different server configurations
- */
-function getCleanUri() {
-    $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
-    $scriptName = $_SERVER['SCRIPT_NAME'] ?? '/index.php';
-    $basePath = dirname($scriptName);
-    
-    // Remove base path from request URI
-    if (!empty($basePath) && $basePath !== '/' && strpos($requestUri, $basePath) === 0) {
-        $requestUri = substr($requestUri, strlen($basePath));
-    }
-    
-    // Handle query string
-    if (strpos($requestUri, '?') !== false) {
-        $requestUri = substr($requestUri, 0, strpos($requestUri, '?'));
-    }
-    
-    // Normalize: remove trailing slashes (except for root)
-    if ($requestUri !== '/' && substr($requestUri, -1) === '/') {
-        $requestUri = rtrim($requestUri, '/');
-    }
-    
-    // Ensure leading slash
-    if (empty($requestUri)) {
-        $requestUri = '/';
-    }
-    if ($requestUri[0] !== '/') {
-        $requestUri = '/' . $requestUri;
-    }
-    
-    return urldecode($requestUri);
-}
-
-/**
- * Get base URL for the application
- */
-function getBaseUrl() {
-    $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    $scriptName = dirname($_SERVER['SCRIPT_NAME'] ?? '');
-    $basePath = ($scriptName === '/' || $scriptName === '\\') ? '' : $scriptName;
-    
-    return $protocol . '://' . $host . $basePath;
-}
-
-// ============================================================
-// ROUTE DEFINITIONS
-// ============================================================
-
-$pageRoutes = [
-    // Authentication routes
-    '/'                    => 'auth/login.php',
-    '/login'               => 'auth/login.php',
-    '/logout'              => 'auth/logout.php',
-    
-    // Main application routes
-    '/dashboard'           => 'pages/dashboard.php',
-    '/sales'               => 'pages/sales.php',
-    '/purchases'           => 'pages/purchases.php',
-    '/inventory'           => 'pages/inventory.php',
-    '/pos'                 => 'pages/pos.php',
-    '/customers'           => 'pages/customers.php',
-    '/contacts'            => 'pages/contacts.php',
-    '/suppliers'           => 'pages/suppliers.php',
-    '/finance'             => 'pages/finance.php',
-    '/expenses'            => 'pages/expenses.php',
-    '/hrm'                 => 'pages/hrm.php',
-    '/reports'             => 'pages/reports.php',
-    '/settings'            => 'pages/settings.php',
-    '/recycle-bin'         => 'pages/recycle_bin.php',
-];
-
-// API routes (handled separately)
-$apiRoutes = [
-    '/api/v1/auth'         => 'auth.php',
-    '/api/v1/dashboard'    => 'dashboard.php',
-    '/api/v1/sales'        => 'sales.php',
-    '/api/v1/purchases'    => 'purchases.php',
-    '/api/v1/inventory'    => 'inventory.php',
-    '/api/v1/pos'          => 'pos.php',
-    '/api/v1/customers'    => 'customers.php',
-    '/api/v1/suppliers'    => 'suppliers.php',
-    '/api/v1/finance'      => 'finance.php',
-    '/api/v1/expenses'     => 'expenses.php',
-    '/api/v1/hrm'          => 'hrm.php',
-    '/api/v1/reports'      => 'reports.php',
-    '/api/v1/system'       => 'system.php',
-];
-
-// ============================================================
-// ROUTE MATCHING & RESOLUTION
-// ============================================================
-
-/**
- * Resolve view file path with multiple fallback attempts
- */
-function resolveViewPath($viewPath) {
-    // Attempt 1: Direct path
-    $fullPath = VIEWS_PATH . '/' . ltrim($viewPath, '/');
-    if (file_exists($fullPath)) {
-        return $fullPath;
-    }
-    
-    // Attempt 2: With .php extension if not present
-    if (substr($fullPath, -4) !== '.php') {
-        $fullPath .= '.php';
-        if (file_exists($fullPath)) {
-            return $fullPath;
+if (PHP_SAPI === 'cli-server') {
+    $developmentPath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+    if (
+        is_string($developmentPath)
+        && !str_contains($developmentPath, '..')
+        && preg_match('#^/(?:assets/(?:css|js)|uploads/(?:products|employees|company))/[a-zA-Z0-9_./-]+\.(?:css|js|jpg|jpeg|png|webp|gif|svg|ico)$#', $developmentPath) === 1
+    ) {
+        $developmentFile = realpath(__DIR__ . $developmentPath);
+        if (
+            $developmentFile !== false
+            && str_starts_with($developmentFile, __DIR__ . DIRECTORY_SEPARATOR)
+            && is_file($developmentFile)
+        ) {
+            return false;
         }
     }
-    
-    // Attempt 3: Check as directory with index.php
-    $indexPath = VIEWS_PATH . '/' . ltrim($viewPath, '/') . '/index.php';
-    if (file_exists($indexPath)) {
-        return $indexPath;
-    }
-    
-    return null;
 }
 
-/**
- * Resolve API file path
- */
-function resolveApiPath($apiPath) {
-    $filename = basename($apiPath);
-    $fullPath = API_PATH . '/' . $filename . '.php';
-    
-    if (file_exists($fullPath)) {
-        return $fullPath;
-    }
-    
-    return null;
-}
+$config = require __DIR__ . '/config/app.php';
 
-// ============================================================
-// REQUEST HANDLING
-// ============================================================
+define('KAROOR_BOOTSTRAPPED', true);
 
-$requestPath = getCleanUri();
-$requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-$baseUrl = getBaseUrl();
+require_once __DIR__ . '/src/Database.php';
+require_once __DIR__ . '/src/Helpers.php';
+require_once __DIR__ . '/src/Response.php';
+require_once __DIR__ . '/src/AuditLogger.php';
+require_once __DIR__ . '/src/Auth.php';
+require_once __DIR__ . '/src/Validator.php';
+require_once __DIR__ . '/src/Backup.php';
 
-// Determine if this is an API request
-$isApiRequest = strpos($requestPath, '/api/v1/') === 0;
+karoor_start_session($config['session']);
+karoor_send_security_headers();
+header('X-Request-ID: ' . Helpers::requestId());
 
-// ============================================================
-// API REQUEST HANDLER
-// ============================================================
-
-if ($isApiRequest) {
-    // Extract API endpoint
-    $apiEndpoint = null;
-    
-    foreach ($apiRoutes as $route => $file) {
-        if (strpos($requestPath, $route) === 0) {
-            $apiEndpoint = $route;
-            break;
+set_error_handler(
+    static function (int $severity, string $message, string $file, int $line): bool {
+        if (!(error_reporting() & $severity)) {
+            return false;
         }
+        throw new ErrorException($message, 0, $severity, $file, $line);
     }
-    
-    if ($apiEndpoint && isset($apiRoutes[$apiEndpoint])) {
-        $apiFile = resolveApiPath($apiRoutes[$apiEndpoint]);
-        
-        if ($apiFile && file_exists($apiFile)) {
-            // Set API context and include
-            define('IS_API_REQUEST', true);
-            include $apiFile;
-            exit;
-        } else {
-            http_response_code(404);
-            echo json_encode([
-                'status' => 'error',
-                'message' => 'API endpoint not found',
-                'path' => $requestPath,
-                'code' => 404
+);
+
+set_exception_handler(
+    static function (Throwable $exception) use ($config): void {
+        $logDirectory = (string) $config['paths']['logs'];
+        if (!is_dir($logDirectory)) {
+            @mkdir($logDirectory, 0700, true);
+        }
+
+        $message = sprintf(
+            "[%s] request=%s %s in %s:%d\n%s\n",
+            date(DATE_ATOM),
+            Helpers::requestId(),
+            $exception->getMessage(),
+            $exception->getFile(),
+            $exception->getLine(),
+            $exception->getTraceAsString()
+        );
+        $logFile = $logDirectory . '/application-' . date('Y-m-d') . '.log';
+        if (!is_dir($logDirectory) || error_log($message, 3, $logFile) === false) {
+            error_log($message);
+        }
+
+        if (Helpers::wantsJson()) {
+            Response::error('An unexpected error occurred. Please try again.', [], 500, [
+                'request_id' => Helpers::requestId(),
             ]);
-            exit;
         }
-    } else {
-        http_response_code(404);
-        echo json_encode([
-            'status' => 'error',
-            'message' => 'Invalid API route',
-            'path' => $requestPath,
-            'code' => 404
-        ]);
+
+        http_response_code(500);
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!doctype html><html lang="en"><meta charset="utf-8">'
+            . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            . '<title>Application error</title><body>'
+            . '<h1>Unable to complete the request</h1>'
+            . '<p>Please try again. Reference: ' . Helpers::escape(Helpers::requestId()) . '</p>'
+            . '</body></html>';
         exit;
+    }
+);
+
+$database = new Database($config['database']);
+$auditLogger = new AuditLogger($database);
+$auth = new Auth($database, $auditLogger, $config);
+$auth->resumeFromRememberCookie();
+
+$requestPath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+$requestPath = is_string($requestPath) ? rawurldecode($requestPath) : '/';
+$configuredBasePath = parse_url((string) $config['app']['url'], PHP_URL_PATH);
+$configuredBasePath = is_string($configuredBasePath) ? rtrim($configuredBasePath, '/') : '';
+if ($configuredBasePath !== '') {
+    if ($requestPath === $configuredBasePath) {
+        $requestPath = '/';
+    } elseif (str_starts_with($requestPath, $configuredBasePath . '/')) {
+        $requestPath = substr($requestPath, strlen($configuredBasePath));
     }
 }
+$requestPath = '/' . trim($requestPath, '/');
 
-// ============================================================
-// PAGE REQUEST HANDLER
-// ============================================================
-
-// Check authentication for protected routes
-$publicRoutes = ['/', '/login', '/logout'];
-$isPublicRoute = in_array($requestPath, $publicRoutes);
-
-// Redirect to login if not authenticated and accessing protected route
-if (!$isPublicRoute && !isset($_SESSION['user_id'])) {
-    if ($requestPath !== '/login') {
-        header('Location: ' . $baseUrl . '/login');
-        exit;
-    }
+if (str_contains($requestPath, "\0")) {
+    http_response_code(400);
+    exit('Invalid request path.');
 }
 
-// Find matching route
-$viewPath = null;
-$matchedRoute = null;
-
-// Exact match first
-if (isset($pageRoutes[$requestPath])) {
-    $viewPath = $pageRoutes[$requestPath];
-    $matchedRoute = $requestPath;
-} else {
-    // Try to find partial match or redirect
-    foreach ($pageRoutes as $route => $file) {
-        if ($route !== '/' && strpos($requestPath, $route) === 0) {
-            $viewPath = $file;
-            $matchedRoute = $route;
-            break;
-        }
-    }
-}
-
-// ============================================================
-// VIEW RENDERING
-// ============================================================
-
-if ($viewPath) {
-    $resolvedPath = resolveViewPath($viewPath);
-    
-    if ($resolvedPath && file_exists($resolvedPath)) {
-        // Set template context variables
-        $page = $matchedRoute;
-        $baseUrl = $baseUrl;
-        $requestPath = $requestPath;
-        
-        // Load layout and view
-        ob_start();
-        include $resolvedPath;
-        $pageContent = ob_get_clean();
-        
-        // Include main layout if not API
-        if (file_exists(VIEWS_PATH . '/layouts/main.php')) {
-            include VIEWS_PATH . '/layouts/main.php';
-        } else {
-            echo $pageContent;
-        }
-        exit;
-    } else {
-        // View file not found
-        http_response_code(404);
-        include VIEWS_PATH . '/errors/404.php';
+if ($requestPath === '/api/v1' || str_starts_with($requestPath, '/api/v1/')) {
+    if (Helpers::requestMethod() === 'OPTIONS') {
+        http_response_code(204);
         exit;
     }
-} else {
-    // No matching route found
-    http_response_code(404);
-    
-    // Try to load 404 error page
-    if (file_exists(VIEWS_PATH . '/errors/404.php')) {
-        include VIEWS_PATH . '/errors/404.php';
-    } else {
-        // Fallback error response
-        header('Content-Type: application/json');
-        echo json_encode([
-            'status' => 'error',
-            'message' => 'Page not found',
-            'path' => $requestPath,
-            'availableRoutes' => array_keys($pageRoutes),
-            'code' => 404
-        ]);
+
+    $segments = array_values(array_filter(explode('/', trim(substr($requestPath, 7), '/')), 'strlen'));
+    $resource = $segments[0] ?? '';
+    $apiFiles = [
+        'auth' => 'auth.php',
+        'dashboard' => 'dashboard.php',
+        'pos' => 'pos.php',
+        'sales' => 'sales.php',
+        'purchases' => 'purchases.php',
+        'inventory' => 'inventory.php',
+        'customers' => 'customers.php',
+        'suppliers' => 'suppliers.php',
+        'finance' => 'finance.php',
+        'expenses' => 'expenses.php',
+        'hrm' => 'hrm.php',
+        'reports' => 'reports.php',
+        'system' => 'system.php',
+    ];
+
+    if (!isset($apiFiles[$resource])) {
+        Response::notFound('The requested API endpoint was not found.');
     }
+
+    $apiSegments = array_slice($segments, 1);
+    $apiAction = $apiSegments[0] ?? 'index';
+
+    if ($resource !== 'auth') {
+        $apiUser = $auth->requireAuth();
+        if ((bool) $apiUser['force_password_change']) {
+            Response::forbidden('You must change your password before using Karoor ERP.');
+        }
+    }
+
+    if (!in_array(Helpers::requestMethod(), ['GET', 'HEAD'], true)) {
+        $csrfHeader = (string) $config['security']['csrf_header'];
+        $serverKey = 'HTTP_' . strtoupper(str_replace('-', '_', $csrfHeader));
+        $token = $_SERVER[$serverKey] ?? $_POST[$config['security']['csrf_token_name']] ?? null;
+        if (!karoor_verify_csrf(is_string($token) ? $token : null)) {
+            Response::error('The security token is invalid or has expired.', [], 419);
+        }
+    }
+
+    $apiFile = __DIR__ . '/api/v1/' . $apiFiles[$resource];
+    if (!is_file($apiFile)) {
+        Response::notFound('The requested API endpoint is not available.');
+    }
+
+    require $apiFile;
     exit;
 }
 
-// ============================================================
-// FALLBACK - Should not reach here
-// ============================================================
-http_response_code(500);
-echo json_encode([
-    'status' => 'error',
-    'message' => 'Internal server error',
-    'code' => 500
-]);
-exit;
+$authenticatedUser = $auth->user();
+$mustChangePassword = $authenticatedUser !== null && (bool) $authenticatedUser['force_password_change'];
+
+if ($requestPath === '/') {
+    $destination = $authenticatedUser === null
+        ? '/login'
+        : ($mustChangePassword ? '/change-password' : '/dashboard');
+    Helpers::safeRedirect(Helpers::appPath($config, $destination));
+}
+
+if ($requestPath === '/login' && $authenticatedUser !== null) {
+    Helpers::safeRedirect(Helpers::appPath($config, $mustChangePassword ? '/change-password' : '/dashboard'));
+}
+
+if ($mustChangePassword && $requestPath !== '/change-password') {
+    Helpers::safeRedirect(Helpers::appPath($config, '/change-password'));
+}
+
+$pageRoutes = [
+    '/login' => ['views/auth/login.php', null],
+    '/change-password' => ['views/auth/change-password.php', null],
+    '/dashboard' => ['views/pages/dashboard.php', 'dashboard.view'],
+    '/pos' => ['views/pages/pos.php', 'pos.use'],
+    '/sales' => ['views/pages/sales.php', ['sales.view', 'sales.view_own']],
+    '/purchases' => ['views/pages/purchases.php', 'purchases.view'],
+    '/inventory' => ['views/pages/inventory.php', 'inventory.view'],
+    '/contacts' => ['views/pages/contacts.php', ['customers.view', 'suppliers.view']],
+    '/finance' => ['views/pages/finance.php', 'finance.view'],
+    '/expenses' => ['views/pages/expenses.php', 'expenses.view'],
+    '/hrm' => ['views/pages/hrm.php', 'hr.view'],
+    '/reports' => ['views/pages/reports.php', 'reports.view'],
+    '/recycle-bin' => ['views/pages/recycle_bin.php', 'recycle_bin.manage'],
+    '/settings' => ['views/pages/settings.php', ['settings.manage', 'users.manage', 'roles.manage', 'audit.view', 'backups.manage']],
+    '/print/receipt' => ['views/print/receipt.php', 'sales.print'],
+    '/print/invoice' => ['views/print/invoice.php', 'sales.print'],
+    '/print/payslip' => ['views/print/payslip.php', 'hr.payroll'],
+];
+
+$route = $pageRoutes[$requestPath] ?? null;
+if ($route === null) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Page not found.');
+}
+
+[$view, $permission] = $route;
+if (is_string($permission)) {
+    $auth->requirePermission($permission);
+} elseif (is_array($permission)) {
+    $auth->requireAuth();
+    if (!$auth->canAny($permission)) {
+        if (Helpers::wantsJson()) {
+            Response::forbidden();
+        }
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        exit('You do not have permission to perform this action.');
+    }
+}
+
+$viewFile = __DIR__ . '/' . $view;
+if (!is_file($viewFile)) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    exit('Page not found.');
+}
+
+$currentUser = $auth->user();
+require $viewFile;
